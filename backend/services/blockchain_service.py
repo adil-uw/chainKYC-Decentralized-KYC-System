@@ -1,17 +1,17 @@
 """
 Blockchain client for Use Case 6: Register credential hash on-chain.
 
-Calls dKYCRegistry contract: isRegistered(bytes32), registerCredential(bytes32, uint64).
-Uses KYC provider private key to send the transaction (msg.sender = issuer).
+Calls DecentralizedKYCCredentialRegistry (smart-contract/src/dKYCRegistry.sol):
+  isRegistered(bytes32), registerCredential(bytes32, uint64), getCredentialStatus(bytes32).
+Uses KYC provider private key to send the transaction (msg.sender must be an authorized issuer).
 
 Config (env):
-  RPC_URL or ETH_RPC_URL              — Ethereum node RPC
-  CONTRACT_ADDRESS or DKYC_REGISTRY_CONTRACT_ADDRESS — deployed contract
+  RPC_URL or ETH_RPC_URL              — Ethereum node RPC (e.g. Sepolia)
+  CONTRACT_ADDRESS or DKYC_REGISTRY_CONTRACT_ADDRESS — deployed contract address
   KYC_PROVIDER_PRIVATE_KEY            — issuer wallet key for sending tx
-  KYC_PROVIDER_ADDRESS                — (optional) for logging
 
-TODO: When teammate deploys, set CONTRACT_ADDRESS in .env and paste final ABI
-      in config/contract_abi.py if different from minimal placeholder.
+After deploy: contract admin must call addIssuer(KYC_PROVIDER_ADDRESS) so this
+wallet can call registerCredential (onlyIssuer modifier).
 """
 
 import logging
@@ -131,4 +131,87 @@ def register_credential_on_chain(
         return tx_hash_str
     except Exception as e:
         logger.exception("registerCredential transaction failed: %s", e)
+        return None
+
+
+def get_credential_status(credential_hash_hex: str) -> Tuple[Optional[bool], Optional[bool], Optional[int]]:
+    """
+    Call contract getCredentialStatus(bytes32 credentialHash). View call, no tx.
+    Returns (registered, revoked, expiry_timestamp) or (None, None, None) on failure.
+    expiry_timestamp is Unix time (uint64 from contract).
+    """
+    rpc_url, contract_address, _ = _get_config()
+    if not rpc_url or not contract_address:
+        logger.warning("RPC_URL or CONTRACT_ADDRESS not set; getCredentialStatus unavailable")
+        return (None, None, None)
+    try:
+        w3 = Web3(Web3.HTTPProvider(rpc_url))
+        if not w3.is_connected():
+            logger.warning("RPC not connected; getCredentialStatus unavailable")
+            return (None, None, None)
+        contract = _get_contract(w3)
+        if not contract:
+            return (None, None, None)
+        hash_bytes32 = _hash_hex_to_bytes32(credential_hash_hex)
+        result = contract.functions.getCredentialStatus(hash_bytes32).call()
+        # result is (registered, revoked, expiry, issuer)
+        registered = bool(result[0])
+        revoked = bool(result[1])
+        expiry = int(result[2])
+        return (registered, revoked, expiry)
+    except Exception as e:
+        logger.warning("getCredentialStatus call failed: %s", e)
+        return (None, None, None)
+
+
+def revoke_credential_on_chain(credential_hash_hex: str, reason_code: int = 0) -> Optional[str]:
+    """
+    Call contract revokeCredential(bytes32 credentialHash, uint8 reasonCode).
+    Signs and sends tx with KYC_PROVIDER_PRIVATE_KEY (must be the issuer who registered).
+    Returns transaction hash (0x-prefixed hex) or None on failure.
+    """
+    rpc_url, contract_address, key_hex = _get_config()
+    if not rpc_url or not contract_address or not key_hex:
+        logger.error("Missing RPC_URL, CONTRACT_ADDRESS, or KYC_PROVIDER_PRIVATE_KEY")
+        return None
+    key_hex = key_hex.strip()
+    if key_hex.startswith("0x"):
+        key_hex = key_hex[2:]
+    try:
+        w3 = Web3(Web3.HTTPProvider(rpc_url))
+        if not w3.is_connected():
+            logger.error("RPC not connected")
+            return None
+        account = Account.from_key(key_hex)
+        contract = _get_contract(w3)
+        if not contract:
+            return None
+        hash_bytes32 = _hash_hex_to_bytes32(credential_hash_hex)
+        reason_uint8 = int(reason_code) & 0xFF
+
+        logger.info("Contract call: revokeCredential(hash=%s..., reasonCode=%s)", credential_hash_hex[:18], reason_uint8)
+        nonce = w3.eth.get_transaction_count(account.address)
+        txn = contract.functions.revokeCredential(hash_bytes32, reason_uint8).build_transaction({
+            "from": account.address,
+            "nonce": nonce,
+            "gas": 150_000,
+        })
+        signed = account.sign_transaction(txn)
+        raw_tx = getattr(signed, "raw_transaction", None) or getattr(signed, "rawTransaction", None)
+        if not raw_tx:
+            logger.error("Signed tx has no raw_transaction / rawTransaction")
+            return None
+        tx_hash = w3.eth.send_raw_transaction(raw_tx)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+        if receipt.get("status") == 0:
+            logger.error("Revoke transaction reverted (status=0)")
+            return None
+        tx_hash_hex = receipt["transactionHash"]
+        tx_hash_str = tx_hash_hex.hex() if hasattr(tx_hash_hex, "hex") else str(tx_hash_hex)
+        if not tx_hash_str.startswith("0x"):
+            tx_hash_str = "0x" + tx_hash_str
+        logger.info("Revoke tx hash: %s", tx_hash_str)
+        return tx_hash_str
+    except Exception as e:
+        logger.exception("revokeCredential transaction failed: %s", e)
         return None

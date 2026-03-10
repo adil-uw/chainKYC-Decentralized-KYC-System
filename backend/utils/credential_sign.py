@@ -45,3 +45,30 @@ def sign_credential_hash(credential_hash_hex: str) -> Optional[str]:
     message = encode_defunct(primitive=hash_bytes)
     signed = account.sign_message(message)
     return "0x" + signed.signature.hex()
+
+
+def verify_credential_signature(
+    credential_hash_hex: str,
+    signature_hex: str,
+    expected_issuer_address: str,
+) -> bool:
+    """
+    Verify that the credential hash was signed by the expected issuer (Use Case 7).
+    Recovers the signer address from (hash, signature) and compares to KYC_PROVIDER_ADDRESS.
+    Returns True if the signature is valid and signer matches (case-insensitive).
+    """
+    if not credential_hash_hex or not signature_hex or not expected_issuer_address:
+        return False
+    hash_bytes = _hash_hex_to_bytes(credential_hash_hex)
+    if len(hash_bytes) != 32:
+        return False
+    try:
+        message = encode_defunct(primitive=hash_bytes)
+        sig = signature_hex.strip()
+        if sig.startswith("0x"):
+            sig = sig[2:]
+        sig_bytes = bytes.fromhex(sig)
+        recovered = Account.recover_message(message, signature=sig_bytes)
+        return recovered and recovered.lower() == expected_issuer_address.strip().lower()
+    except Exception:
+        return False

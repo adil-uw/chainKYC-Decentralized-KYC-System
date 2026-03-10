@@ -1,5 +1,5 @@
 """
-Credentials Router — Use Cases 4 (issue), 5 (hash/sign), 6 (register), 6A (retrieve by wallet).
+Credentials Router — Use Cases 4 (issue), 5 (hash/sign), 6 (register), 6A (retrieve by wallet), 7 (verify).
 
 Thin layer: calls CredentialService, returns response.
 Error responses use body {"message": "..."} as per API spec.
@@ -7,7 +7,7 @@ Error responses use body {"message": "..."} as per API spec.
 
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Body
 from fastapi.responses import JSONResponse
 
 from schemas.credential_schema import (
@@ -15,6 +15,11 @@ from schemas.credential_schema import (
     CredentialSignResponse,
     CredentialRegisterResponse,
     CredentialByWalletResponse,
+    CredentialVerifyRequest,
+    CredentialRevokeRequest,
+    CredentialRevokeResponse,
+    CredentialStatusResponse,
+    CredentialsByWalletListResponse,
 )
 from services.credential_service import CredentialService
 
@@ -72,16 +77,25 @@ async def issue_credential(kyc_request_id: str):
         400: {"description": "Wallet address is invalid"},
     },
 )
-async def get_credential_by_wallet(wallet_address: str):
+async def get_credential_by_wallet(
+    wallet_address: str,
+    format: str | None = None,
+):
     """
     Retrieve the issued credential for the given linked wallet address.
     Returns credential and signature so the user can present it to a verifier.
+
+    Use ?format=package to get only { credential, signature } — that JSON can be
+    downloaded and sent to POST /api/credentials/verify as the request body.
     """
     try:
         result = await CredentialService.get_credential_by_wallet(wallet_address)
+        data = result.model_dump(by_alias=True)
+        if (format or "").strip().lower() == "package":
+            data = {"credential": data["credential"], "signature": data["signature"]}
         return JSONResponse(
             status_code=200,
-            content=result.model_dump(by_alias=True),
+            content=data,
         )
     except ValueError as e:
         msg = str(e)
@@ -90,6 +104,67 @@ async def get_credential_by_wallet(wallet_address: str):
         if msg == "No credential found for this wallet":
             return _message_response(404, msg)
         return _message_response(400, msg)
+
+
+# --- Use Case 10: List Credentials for a User ---
+
+
+@router.get(
+    "/by-wallet/{wallet_address}/list",
+    status_code=200,
+    responses={
+        404: {"description": "No credentials found for this wallet"},
+        400: {"description": "Wallet address is invalid"},
+    },
+)
+async def list_credentials_by_wallet(wallet_address: str):
+    """
+    List all credentials linked to the user's wallet address (credentialId, status, issuedAt, expiry).
+    """
+    try:
+        result = await CredentialService.list_credentials_by_wallet(wallet_address)
+        return JSONResponse(
+            status_code=200,
+            content=result.model_dump(by_alias=True),
+        )
+    except ValueError as e:
+        msg = str(e)
+        if msg == "Wallet address is invalid":
+            return _message_response(400, msg)
+        if msg == "No credentials found for this wallet":
+            return _message_response(404, msg)
+        return _message_response(400, msg)
+
+
+# --- Use Case 7: Verify Credential ---
+
+
+@router.post(
+    "/verify",
+    status_code=200,
+    responses={
+        400: {"description": "Credential or signature is missing"},
+        500: {"description": "Failed to verify credential"},
+    },
+)
+async def verify_credential(body: CredentialVerifyRequest):
+    """
+    Verify a credential presented by a user. Checks issuer signature off-chain and
+    credential status on-chain (registered, not revoked, not expired).
+    Backend independently verifies hash, signature, and blockchain status.
+    """
+    if not body.credential or not (body.signature or "").strip():
+        return _message_response(400, "Credential or signature is missing")
+    try:
+        credential_dict = body.credential.model_dump(by_alias=True)
+        result = CredentialService.verify_credential(credential_dict, body.signature.strip())
+        return JSONResponse(
+            status_code=200,
+            content=result.model_dump(by_alias=True),
+        )
+    except Exception as e:
+        logger.exception("Credential verify failed: %s", e)
+        return _message_response(500, "Failed to verify credential")
 
 
 # --- Use Case 5: Hash and Sign the Credential ---
@@ -130,6 +205,36 @@ async def sign_credential(credential_id: str):
         return _message_response(500, "Failed to hash and sign credential")
 
 
+# --- Use Case 9: Check Credential Status ---
+
+
+@router.get(
+    "/{credential_id}/status",
+    status_code=200,
+    responses={
+        404: {"description": "Credential not found"},
+        500: {"description": "Failed to fetch credential status"},
+    },
+)
+async def get_credential_status(credential_id: str):
+    """
+    Get current status of a credential (DB + on-chain: registered, revoked, expired).
+    """
+    try:
+        result = await CredentialService.get_credential_status(credential_id)
+        return JSONResponse(
+            status_code=200,
+            content=result.model_dump(by_alias=True),
+        )
+    except ValueError as e:
+        if str(e) == "Credential not found":
+            return _message_response(404, "Credential not found")
+        return _message_response(400, str(e))
+    except Exception as e:
+        logger.exception("Get credential status failed: %s", e)
+        return _message_response(500, "Failed to fetch credential status")
+
+
 # --- Use Case 6: Register Credential Hash On-Chain ---
 
 
@@ -168,4 +273,48 @@ async def register_credential(credential_id: str):
     except Exception as e:
         logger.exception("Credential register failed: %s", e)
         return _message_response(500, "Failed to register credential on-chain")
+
+
+# --- Use Case 8: Revoke Credential ---
+
+
+@router.post(
+    "/{credential_id}/revoke",
+    status_code=200,
+    responses={
+        404: {"description": "Credential not found"},
+        409: {"description": "Credential is already revoked or not registered on-chain"},
+        500: {"description": "Failed to revoke credential"},
+    },
+)
+async def revoke_credential(
+    credential_id: str,
+    body: CredentialRevokeRequest | None = Body(default=None),
+):
+    """
+    Revoke a credential on-chain and in MongoDB. Credential must be registered on-chain.
+    Optional body: { "reason": "User identity updated" }.
+    """
+    reason = body.reason if body else None
+    try:
+        result = await CredentialService.revoke_credential(credential_id, reason=reason)
+        return JSONResponse(
+            status_code=200,
+            content=result.model_dump(by_alias=True),
+        )
+    except ValueError as e:
+        msg = str(e)
+        if msg == "Credential not found":
+            return _message_response(404, msg)
+        if "already revoked" in msg:
+            return _message_response(409, "Credential is already revoked")
+        if "not registered on-chain" in msg:
+            return _message_response(409, "Credential is not registered on-chain")
+        return _message_response(400, msg)
+    except RuntimeError as e:
+        logger.exception("Revoke failed: %s", e)
+        return _message_response(500, "Failed to revoke credential")
+    except Exception as e:
+        logger.exception("Revoke failed: %s", e)
+        return _message_response(500, "Failed to revoke credential")
 

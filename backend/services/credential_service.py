@@ -1,13 +1,16 @@
 """
-Credential Service — Use Cases 4 (issue), 5 (hash/sign), 6 (register), 6A (retrieve by wallet).
+Credential Service — Use Cases 4 (issue), 5 (hash/sign), 6 (register), 6A (retrieve by wallet), 7 (verify).
 
 Use Case 4: Create credential from approved, wallet-linked KYC request.
 Use Case 5: Hash the credential, sign with KYC provider key, store hash and signature.
 Use Case 6: Register credential hash on dKYCRegistry contract, store tx hash in MongoDB.
 Use Case 6A: Retrieve issued credential by linked wallet address.
+Use Case 7: Verify credential (issuer signature off-chain + status on-chain).
+Use Case 8: Revoke credential on-chain and in MongoDB.
 """
 
 import logging
+import os
 import re
 from datetime import datetime, timezone, timedelta
 
@@ -19,12 +22,19 @@ from schemas.credential_schema import (
     CredentialRegisterResponse,
     CredentialByWalletResponse,
     CredentialPayload,
+    CredentialVerifyResponse,
+    CredentialRevokeResponse,
+    CredentialStatusResponse,
+    CredentialSummaryItem,
+    CredentialsByWalletListResponse,
 )
 from utils.credential_hash import credential_document_hash
-from utils.credential_sign import sign_credential_hash
+from utils.credential_sign import sign_credential_hash, verify_credential_signature
 from services.blockchain_service import (
     is_registered_on_chain,
     register_credential_on_chain,
+    get_credential_status,
+    revoke_credential_on_chain,
 )
 
 logger = logging.getLogger(__name__)
@@ -115,17 +125,14 @@ class CredentialService:
 
     # --- Use Case 5: Hash and Sign the Credential ---
 
-    # Keys that form the signed credential payload (same as at issue time; exclude hash/signature/signedAt)
+    # Fields included in the credential hash (issuedAt/expiry excluded to avoid date-format mismatch).
+    # Expiry is enforced on-chain; verifier recomputes this hash from the presented credential.
     _CREDENTIAL_HASH_KEYS = (
-        "_id",
-        "kycRequestId",
+        "credentialId",
         "issuer",
         "subjectWallet",
-        "fullName",
         "identityVerified",
         "idType",
-        "issuedAt",
-        "expiry",
         "status",
     )
 
@@ -134,6 +141,7 @@ class CredentialService:
         """
         Hash the credential document and sign it with the KYC provider's private key.
         Stores credentialHash, signature, and signedAt on the credential record.
+        Hash is over the public credential only (same shape as 6A/verify).
 
         Credential must exist and have status "active".
         KYC_PROVIDER_PRIVATE_KEY must be set in the environment.
@@ -154,11 +162,14 @@ class CredentialService:
         if cred_doc.get("status") != "active":
             raise ValueError("Credential is not eligible for signing")
 
-        # Build the payload that was issued (consistent format for deterministic hash)
+        # Build hash payload (no dates — expiry enforced on-chain; avoids date-format issues)
         payload = {
-            k: cred_doc[k]
-            for k in cls._CREDENTIAL_HASH_KEYS
-            if k in cred_doc
+            "credentialId": str(cred_doc.get("_id", "")),
+            "issuer": cred_doc.get("issuer", ""),
+            "subjectWallet": cred_doc.get("subjectWallet", ""),
+            "identityVerified": bool(cred_doc.get("identityVerified", True)),
+            "idType": cred_doc.get("idType", ""),
+            "status": cred_doc.get("status", "active"),
         }
         credential_hash = credential_document_hash(payload)
 
@@ -169,15 +180,25 @@ class CredentialService:
             )
 
         now = datetime.now(timezone.utc)
+        old_hash = cred_doc.get("credentialHash")
+        update_doc = {
+            "$set": {
+                "credentialHash": credential_hash,
+                "signature": signature,
+                "signedAt": now,
+            }
+        }
+        # If hash changed (e.g. re-signed with new payload format), clear on-chain state
+        # so the credential can be re-registered with the new hash.
+        if old_hash and old_hash != credential_hash:
+            update_doc["$unset"] = {
+                "onChainRegistered": "",
+                "transactionHash": "",
+                "registeredAt": "",
+            }
         await cred_coll.update_one(
             {"_id": credential_id},
-            {
-                "$set": {
-                    "credentialHash": credential_hash,
-                    "signature": signature,
-                    "signedAt": now,
-                }
-            },
+            update_doc,
         )
 
         return CredentialSignResponse(
@@ -231,6 +252,11 @@ class CredentialService:
         else:
             raise ValueError("Credential expiry must be a datetime")
 
+        # Contract reverts if expiry <= block.timestamp (InvalidExpiry)
+        now_ts = int(datetime.now(timezone.utc).timestamp())
+        if expiry_uint64 <= now_ts:
+            raise ValueError("Credential is not eligible for registration: credential has expired")
+
         tx_hash = register_credential_on_chain(credential_hash, expiry_uint64)
         if not tx_hash:
             raise RuntimeError("Failed to register credential on-chain")
@@ -253,6 +279,111 @@ class CredentialService:
             credential_hash=credential_hash,
             transaction_hash=tx_hash,
             message="Credential registered on-chain successfully",
+        )
+
+    # --- Use Case 8: Revoke Credential ---
+
+    @classmethod
+    async def revoke_credential(cls, credential_id: str, reason: str | None = None) -> CredentialRevokeResponse:
+        """
+        Revoke a credential on-chain and mark as revoked in MongoDB.
+        Credential must exist, be registered on-chain, and not already revoked.
+
+        Raises:
+            ValueError("Credential not found")
+            ValueError("Credential is not registered on-chain")
+            ValueError("Credential is already revoked")
+            RuntimeError when contract call fails.
+        """
+        db = get_database()
+        cred_coll = db[CREDENTIALS_COLLECTION]
+
+        cred_doc = await cred_coll.find_one({"_id": credential_id})
+        if not cred_doc:
+            raise ValueError("Credential not found")
+
+        if not cred_doc.get("onChainRegistered"):
+            raise ValueError("Credential is not registered on-chain")
+
+        if cred_doc.get("revoked") or cred_doc.get("status") == "revoked":
+            raise ValueError("Credential is already revoked")
+
+        credential_hash = cred_doc.get("credentialHash")
+        if not credential_hash:
+            raise ValueError("Credential has no credentialHash")
+
+        # Contract uses uint8 reason code; we store human-readable reason in MongoDB
+        reason_code = 0
+        tx_hash = revoke_credential_on_chain(credential_hash, reason_code)
+        if not tx_hash:
+            raise RuntimeError("Failed to revoke credential on-chain")
+
+        now = datetime.now(timezone.utc)
+        await cred_coll.update_one(
+            {"_id": credential_id},
+            {
+                "$set": {
+                    "status": "revoked",
+                    "revoked": True,
+                    "revocationReason": (reason or "").strip() or None,
+                    "revokedAt": now,
+                    "revocationTxHash": tx_hash,
+                }
+            },
+        )
+        logger.info("Credential revoked: credentialId=%s, txHash=%s", credential_id, tx_hash)
+
+        return CredentialRevokeResponse(
+            credential_id=credential_id,
+            credential_hash=credential_hash,
+            transaction_hash=tx_hash,
+            status="revoked",
+            message="Credential revoked successfully",
+        )
+
+    # --- Use Case 9: Check Credential Status ---
+
+    @classmethod
+    async def get_credential_status(cls, credential_id: str) -> CredentialStatusResponse:
+        """
+        Fetch current status of a credential: DB + on-chain (registered, revoked, expired).
+        Raises ValueError("Credential not found") when no credential exists.
+        """
+        db = get_database()
+        cred_coll = db[CREDENTIALS_COLLECTION]
+
+        cred_doc = await cred_coll.find_one({"_id": credential_id})
+        if not cred_doc:
+            raise ValueError("Credential not found")
+
+        credential_hash = cred_doc.get("credentialHash") or ""
+        db_status = cred_doc.get("status", "active")
+
+        registered_on_chain = False
+        revoked = bool(cred_doc.get("revoked"))
+        expired = False
+
+        if credential_hash:
+            reg, rev, expiry_ts = get_credential_status(credential_hash)
+            if reg is not None:
+                registered_on_chain = reg
+            if rev is not None:
+                revoked = revoked or rev
+            if expiry_ts is not None:
+                now_ts = int(datetime.now(timezone.utc).timestamp())
+                expired = now_ts > expiry_ts
+
+        # If DB says revoked, ensure we report revoked
+        if db_status == "revoked":
+            revoked = True
+
+        return CredentialStatusResponse(
+            credentialId=credential_id,
+            credentialHash=credential_hash,
+            registeredOnChain=registered_on_chain,
+            revoked=revoked,
+            expired=expired,
+            status=db_status,
         )
 
     # --- Use Case 6A: Retrieve Issued Credential by Wallet ---
@@ -315,4 +446,93 @@ class CredentialService:
             credential=credential_payload,
             signature=signature,
             message="Credential fetched successfully",
+        )
+
+    # --- Use Case 10: List Credentials for a User ---
+
+    @classmethod
+    async def list_credentials_by_wallet(cls, wallet_address: str) -> CredentialsByWalletListResponse:
+        """
+        Return all credentials linked to the given wallet address (summary: credentialId, status, issuedAt, expiry).
+        Raises ValueError("Wallet address is invalid") or ValueError("No credentials found for this wallet").
+        """
+        raw = (wallet_address or "").strip()
+        if not _WALLET_ADDRESS_PATTERN.match(raw):
+            raise ValueError("Wallet address is invalid")
+
+        db = get_database()
+        cred_coll = db[CREDENTIALS_COLLECTION]
+
+        docs = await cred_coll.find(
+            {"$or": [{"subjectWallet": raw}, {"subjectWallet": raw.lower()}]}
+        ).to_list(length=None)
+        items: list[CredentialSummaryItem] = []
+        for doc in docs:
+            cred_id = doc.get("_id") or doc.get("credentialId", "")
+            if isinstance(cred_id, bytes):
+                cred_id = cred_id.hex()
+            cred_id_str = str(cred_id)
+            issued_at = cls._datetime_to_iso(doc.get("issuedAt"))
+            expiry = cls._datetime_to_iso(doc.get("expiry"))
+            items.append(
+                CredentialSummaryItem(
+                    credentialId=cred_id_str,
+                    status=doc.get("status", "active"),
+                    issuedAt=issued_at,
+                    expiry=expiry,
+                )
+            )
+
+        if not items:
+            raise ValueError("No credentials found for this wallet")
+
+        return CredentialsByWalletListResponse(
+            walletAddress=raw,
+            credentials=items,
+        )
+
+    # --- Use Case 7: Verify Credential ---
+
+    @staticmethod
+    def verify_credential(credential_dict: dict, signature: str) -> CredentialVerifyResponse:
+        """
+        Verify a credential presented by a user. Backend does not trust user fields:
+        recomputes credential hash (same 6 fields as sign, no dates), verifies issuer
+        signature, checks on-chain status (registered, not revoked, not expired).
+        """
+        # Same 6 fields as sign (no issuedAt/expiry) so hash never depends on date format
+        payload = {
+            "credentialId": str(credential_dict.get("credentialId", "")),
+            "issuer": str(credential_dict.get("issuer", "")),
+            "subjectWallet": str(credential_dict.get("subjectWallet", "")),
+            "identityVerified": bool(credential_dict.get("identityVerified", True)),
+            "idType": str(credential_dict.get("idType", "")),
+            "status": str(credential_dict.get("status", "active")),
+        }
+        credential_hash = credential_document_hash(payload)
+        expected_issuer = (os.getenv("KYC_PROVIDER_ADDRESS") or "").strip()
+        signature_valid = verify_credential_signature(credential_hash, signature, expected_issuer)
+
+        registered, revoked, expiry_ts = get_credential_status(credential_hash)
+        registered_on_chain = registered is True
+        revoked_flag = revoked is True
+        now_ts = int(datetime.now(timezone.utc).timestamp())
+        expired = expiry_ts is not None and now_ts > expiry_ts
+
+        verification_status = "valid" if (
+            signature_valid and registered_on_chain and not revoked_flag and not expired
+        ) else "invalid"
+        message = (
+            "Credential verified successfully" if verification_status == "valid"
+            else "Credential verification failed"
+        )
+
+        return CredentialVerifyResponse(
+            credentialHash=credential_hash,
+            signatureValid=signature_valid,
+            registeredOnChain=registered_on_chain,
+            revoked=revoked_flag,
+            expired=expired,
+            verificationStatus=verification_status,
+            message=message,
         )
