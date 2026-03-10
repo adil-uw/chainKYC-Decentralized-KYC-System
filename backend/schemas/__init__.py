@@ -8,7 +8,13 @@ from schemas.kyc_schema import (
     LinkWalletRequest,
     LinkWalletResponse,
 )
-from schemas.credential_schema import CredentialIssueResponse
+from schemas.credential_schema import (
+    CredentialIssueResponse,
+    CredentialSignResponse,
+    CredentialRegisterResponse,
+    CredentialByWalletResponse,
+    CredentialPayload,
+)
 
 __all__ = [
     "KYCSubmitRequest",
@@ -17,4 +23,8 @@ __all__ = [
     "LinkWalletRequest",
     "LinkWalletResponse",
     "CredentialIssueResponse",
+    "CredentialSignResponse",
+    "CredentialRegisterResponse",
+    "CredentialByWalletResponse",
+    "CredentialPayload",
 ]

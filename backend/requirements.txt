@@ -1,6 +1,8 @@
-# Use Case 1: Submit KYC Off-Chain
+# Use Cases 1–6
 fastapi>=0.109.0
 uvicorn[standard]>=0.27.0
 motor>=3.3.0
 pydantic>=2.5.0
 python-dotenv>=1.0.0
+eth-account>=0.10.0
+web3>=6.0.0
