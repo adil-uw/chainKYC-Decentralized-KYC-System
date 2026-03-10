@@ -15,11 +15,14 @@ export const api = axios.create({
 api.interceptors.response.use(
   (res) => res,
   (err) => {
+    const data = err.response?.data;
     const message =
-      err.response?.data?.detail ||
-      (Array.isArray(err.response?.data?.detail)
-        ? err.response.data.detail.map((e) => e.msg || JSON.stringify(e)).join(', ')
-        : err.message) ||
+      data?.message ||
+      data?.detail ||
+      (Array.isArray(data?.detail)
+        ? data.detail.map((e) => e.msg || JSON.stringify(e)).join(', ')
+        : null) ||
+      err.message ||
       'Request failed';
     return Promise.reject({ ...err, message });
   }

@@ -1,37 +1,38 @@
 /**
- * KYC API — align paths and payloads with actual backend when available.
- * See API_CONTRACT.md for expected contract.
+ * KYC API — aligned with backend (backend/routers/kyc_router.py).
+ * Backend prefix: /api/kyc. Submit: POST /api/kyc/submit.
  */
 import { api } from './client';
 
-const PREFIX = '/api';
+const PREFIX = '/api/kyc';
 
 export async function submitKycRequest(body) {
-  const { data } = await api.post(`${PREFIX}/kyc/requests`, body);
+  const { data } = await api.post(`${PREFIX}/submit`, body);
   return data;
 }
 
+/** Not yet in backend — placeholder for future GET /api/kyc/requests/:id */
 export async function getKycRequest(kycRequestId) {
-  const { data } = await api.get(`${PREFIX}/kyc/requests/${kycRequestId}`);
+  const { data } = await api.get(`${PREFIX}/requests/${kycRequestId}`);
   return data;
 }
 
+/** Not yet in backend — placeholder for future GET /api/kyc/requests */
 export async function listKycRequests(params = {}) {
-  const { data } = await api.get(`${PREFIX}/kyc/requests`, { params });
+  const { data } = await api.get(`${PREFIX}/requests`, { params });
   return data;
 }
 
+/** Not yet in backend — placeholder for future POST .../wallet */
 export async function linkWallet(kycRequestId, walletAddress) {
-  const { data } = await api.post(`${PREFIX}/kyc/requests/${kycRequestId}/wallet`, {
+  const { data } = await api.post(`${PREFIX}/requests/${kycRequestId}/wallet`, {
     walletAddress,
   });
   return data;
 }
 
+/** Not yet in backend — placeholder for future POST .../screen */
 export async function screenKycRequest(kycRequestId, payload) {
-  const { data } = await api.post(
-    `${PREFIX}/kyc/requests/${kycRequestId}/screen`,
-    payload
-  );
+  const { data } = await api.post(`${PREFIX}/requests/${kycRequestId}/screen`, payload);
   return data;
 }

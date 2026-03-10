@@ -1,29 +1,26 @@
 # ChainKYC Frontend — API Contract (Backend-Alignment Target)
 
-**Note:** No backend code was present in the repository at frontend creation time. This document defines the expected API contract derived from the product specification. When the backend is implemented, update `src/api/*` to match actual routes, request/response shapes, and error formats.
+**Backend** lives in `backend/` (FastAPI). This doc reflects the actual backend where implemented; other endpoints are placeholders for future use cases.
 
 ## Base
 
-- **Base path:** `/api` or root (configurable via `VITE_API_BASE_URL`)
-- **Auth:** No auth headers specified in spec; add if backend requires them.
-- **CORS:** Backend should allow frontend origin.
+- **Base path:** configurable via `VITE_API_BASE_URL` (e.g. `http://localhost:8000`). Frontend uses `/api/kyc` etc.; ensure backend CORS allows the frontend origin.
+- **Error body:** Backend returns `{"message": "..."}` for 400/409/500 (see `backend/main.py` and `backend/routers/kyc_router.py`).
 
 ---
 
-## 1. KYC Submission
+## 1. KYC Submission — **implemented in backend**
 
-- **POST** `/kyc/requests` or `/api/kyc/requests`
-- **Request body:**
+- **POST** `/api/kyc/submit` (router prefix `/api/kyc`, route `/submit`)
+- **Request body (camelCase):**
   - `fullName` (string, required)
-  - `dateOfBirth` (string, required, e.g. ISO date)
+  - `dateOfBirth` (string, required)
   - `address` (string, required)
-  - `email` (string, required)
-  - `phoneNumber` (string, optional)
-  - At least one of: `ssn`, `driverLicenseNumber` (conditional validation)
+  - At least one of: `ssn`, `driverLicenseNumber` (validated by schema)
+  - Optional: `email`, `phoneNumber`
 - **Response (201):**
-  - `kycRequestId` (string)
-  - Optional: `status`, `message`
-- **Errors:** 400 (validation), 409 (duplicate active request), 500
+  - `message`, `kycRequestId`, `status` (e.g. `"pending"`)
+- **Errors:** 400 (validation / missing identity proof), 409 (duplicate pending request), 500 (e.g. DB failure)
 
 ---
 
@@ -127,16 +124,14 @@
 
 ---
 
-## Error Response Shape (assumed)
+## Error Response Shape (backend)
+
+Backend returns a single message string:
 
 ```json
 {
-  "detail": "Error message string or array of validation errors"
+  "message": "Error description"
 }
 ```
 
-Validation errors may be array of `{ "loc": ["body", "field"], "msg": "..." }`.
-
----
-
-When backend is available, compare these with actual FastAPI routes and Pydantic models and update this file and `src/api/*` accordingly.
+Examples: `"fullName, dateOfBirth, and address are required"`, `"Either SSN or Driver License Number must be provided"`, `"A pending KYC request already exists for this user"`, `"Failed to create KYC request"`.
