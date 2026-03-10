@@ -1,0 +1,38 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-bg text-gray-200 font-sans antialiased;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-bg-card border border-border rounded-xl p-6 shadow-lg transition-all duration-200;
+  }
+  .card:hover {
+    @apply border-border-muted;
+  }
+  .btn-primary {
+    @apply px-4 py-2 rounded-lg font-medium bg-accent-teal text-white hover:bg-accent-teal/90 transition-colors focus:outline-none focus:ring-2 focus:ring-accent-teal/50;
+  }
+  .btn-secondary {
+    @apply px-4 py-2 rounded-lg font-medium bg-bg-elevated border border-border text-gray-200 hover:bg-bg-muted transition-colors focus:outline-none focus:ring-2 focus:ring-accent-cyan/50;
+  }
+  .btn-danger {
+    @apply px-4 py-2 rounded-lg font-medium bg-status-error/20 text-status-error border border-status-error/50 hover:bg-status-error/30 transition-colors focus:outline-none focus:ring-2 focus:ring-status-error/50;
+  }
+  .input-field {
+    @apply w-full px-4 py-2.5 rounded-lg bg-bg-muted border border-border text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent-cyan/50 focus:border-accent-cyan transition-colors;
+  }
+  .badge {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+  }
+  .badge-pending { @apply bg-amber-500/20 text-amber-400 border border-amber-500/40; }
+  .badge-approved { @apply bg-status-success/20 text-green-400 border border-status-success/40; }
+  .badge-rejected { @apply bg-status-error/20 text-red-400 border border-status-error/40; }
+  .badge-revoked { @apply bg-status-revoked/30 text-red-300 border border-status-revoked/50; }
+  .badge-success { @apply bg-status-success/20 text-green-400; }
+}
