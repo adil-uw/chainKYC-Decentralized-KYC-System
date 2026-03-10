@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 from database.mongo_connection import init_mongo, close_connection
 from routers.test import router as test_router
 from routers.kyc_router import router as kyc_router
+from routers.credentials_router import router as credentials_router
 
 
 @asynccontextmanager
@@ -67,3 +68,4 @@ async def validation_exception_handler(request, exc: RequestValidationError):
 
 app.include_router(test_router)
 app.include_router(kyc_router)
+app.include_router(credentials_router)
