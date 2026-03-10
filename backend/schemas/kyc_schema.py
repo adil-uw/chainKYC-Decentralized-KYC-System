@@ -1,13 +1,19 @@
 """
-Schemas for Use Case 1: Submit KYC Data Off-Chain.
+KYC API schemas.
 
-Defines the shape of the request body and the success response
-for POST /api/kyc/submit. Uses camelCase in JSON to match the API spec.
+- Use Case 1: KYCSubmitRequest, KYCSubmitResponse (POST /api/kyc/submit).
+- Use Case 2: KYCScreenResponse (POST /api/kyc/{kycRequestId}/screen).
+- Use Case 3: LinkWalletRequest, LinkWalletResponse (POST /api/kyc/{kycRequestId}/link-wallet).
+Uses camelCase in JSON to match the API spec.
 """
 
+import re
 from typing import Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+# Ethereum address: 0x followed by exactly 40 hexadecimal characters
+ETH_ADDRESS_PATTERN = re.compile(r"^0x[a-fA-F0-9]{40}$")
 
 
 class KYCSubmitRequest(BaseModel):
@@ -49,5 +55,55 @@ class KYCSubmitResponse(BaseModel):
     message: str = Field(..., description="Success message")
     kyc_request_id: str = Field(..., alias="kycRequestId", description="Unique ID for this KYC request")
     status: str = Field(..., description="Current status, e.g. pending")
+
+    model_config = {"populate_by_name": True}
+
+
+# --- Use Case 2: Perform Off-Chain KYC Screening ---
+
+
+class KYCScreenResponse(BaseModel):
+    """
+    Response for POST /api/kyc/{kycRequestId}/screen.
+    Includes optional reason when status is "rejected".
+    """
+
+    kyc_request_id: str = Field(..., alias="kycRequestId")
+    status: str = Field(..., description="approved | rejected")
+    message: str = Field(..., description="Screening result message")
+    reason: Optional[str] = Field(None, description="Rejection reason when status is rejected")
+
+    model_config = {"populate_by_name": True}
+
+
+# --- Use Case 3: Link Wallet Address to Approved User ---
+
+
+class LinkWalletRequest(BaseModel):
+    """Request body for POST /api/kyc/{kycRequestId}/link-wallet."""
+
+    wallet_address: str = Field(..., alias="walletAddress", description="Ethereum wallet address (0x + 40 hex chars)")
+
+    model_config = {"populate_by_name": True}
+
+    @field_validator("wallet_address")
+    @classmethod
+    def validate_ethereum_address(cls, v: str) -> str:
+        """Ensure wallet address matches Ethereum format: 0x + 40 hex characters."""
+        if not v or not v.strip():
+            raise ValueError("Wallet address is required")
+        normalized = v.strip()
+        if not ETH_ADDRESS_PATTERN.match(normalized):
+            raise ValueError("Wallet address is invalid")
+        return normalized
+
+
+class LinkWalletResponse(BaseModel):
+    """Success response for POST /api/kyc/{kycRequestId}/link-wallet."""
+
+    kyc_request_id: str = Field(..., alias="kycRequestId")
+    status: str = Field(..., description="approved")
+    wallet_address: str = Field(..., alias="walletAddress")
+    message: str = Field(..., description="Wallet linked successfully")
 
     model_config = {"populate_by_name": True}
