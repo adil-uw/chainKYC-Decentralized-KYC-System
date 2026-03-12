@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { getKycRequest } from '../api/kyc';
 import { useAppStore } from '../store/appStore';
@@ -14,16 +14,37 @@ export default function KycStatus() {
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState(null);
 
+  const [notFound, setNotFound] = useState(false);
+  const didAutoFetch = useRef(false);
+
+  const [errorType, setErrorType] = useState(null); // 'network' | 'not_found' | 'server'
+
   const fetchStatus = async () => {
     if (!kycRequestId?.trim()) return;
     setLoading(true);
     setData(null);
+    setNotFound(false);
+    setErrorType(null);
     try {
       const res = await getKycRequest(kycRequestId.trim());
       setData(Array.isArray(res) ? res[0] : res);
+      setNotFound(false);
+      setErrorType(null);
     } catch (err) {
-      setToast({ message: err.message || 'Request not found', variant: 'error' });
       setData(null);
+      setNotFound(true);
+      const status = err.response?.status;
+      const msg = (err.message || '').toLowerCase();
+      if (status === 404 || msg.includes('not found')) {
+        setErrorType('not_found');
+        setToast({ message: 'KYC request not found for this ID.', variant: 'error' });
+      } else if (status != null && status >= 500) {
+        setErrorType('server');
+        setToast({ message: err.message || 'Server error. Check backend logs.', variant: 'error' });
+      } else {
+        setErrorType('network');
+        setToast({ message: err.message || 'Backend not reachable.', variant: 'error' });
+      }
     } finally {
       setLoading(false);
     }
@@ -32,6 +53,15 @@ export default function KycStatus() {
   useEffect(() => {
     if (storedId && !kycRequestId) setKycRequestId(storedId);
   }, [storedId, kycRequestId]);
+
+  // Auto-fetch once when page loads with a pre-filled ID (e.g. after redirect from Submit KYC)
+  useEffect(() => {
+    const id = kycRequestId?.trim();
+    if (id && !didAutoFetch.current) {
+      didAutoFetch.current = true;
+      fetchStatus();
+    }
+  }, [kycRequestId]);
 
   const status = data?.status?.toLowerCase();
 
@@ -57,6 +87,21 @@ export default function KycStatus() {
           </div>
         </div>
       </div>
+
+      {notFound && (
+        <div className="card border-amber-500/40 bg-amber-500/5 space-y-4">
+          <p className="text-amber-400 font-medium">
+            {errorType === 'network' ? 'Backend not reachable' : errorType === 'server' ? 'Server error' : 'KYC request not found'}
+          </p>
+          <p className="text-gray-400 text-sm">
+            That request ID doesn’t exist or the backend may not have a status endpoint yet. </p>
+          <p className="text-gray-400 text-sm mt-2"><strong>1. Start the backend</strong> (if not already running): open a terminal, run <code className="bg-bg-muted px-1 rounded">cd backend</code> then <code className="bg-bg-muted px-1 rounded">uvicorn main:app --reload</code>. Check <a href="http://localhost:8000/api/health" target="_blank" rel="noopener noreferrer" className="text-accent-teal hover:underline">http://localhost:8000/api/health</a> returns <code className="bg-bg-muted px-1 rounded">{"{ \"status\": \"ok\" }"}</code>.</p>
+          <p className="text-gray-400 text-sm"><strong>2. Submit a new KYC</strong> using the button below (the current ID may have been created when the backend was off or on a different DB). After submit you will be redirected here and the new ID will be checked automatically.</p>
+          <Link to="/submit-kyc" className="btn-primary inline-block mt-2">
+            Submit KYC
+          </Link>
+        </div>
+      )}
 
       {data && (
         <div className="card space-y-4">
@@ -84,9 +129,12 @@ export default function KycStatus() {
 
           <div className="pt-4 border-t border-border">
             {status === 'approved' && (
-              <Link to="/connect-wallet" className="btn-primary inline-block">
-                Connect Wallet
-              </Link>
+              <div className="space-y-2">
+                <p className="text-gray-400 text-sm">Next: link your wallet to this request so you can receive credentials.</p>
+                <Link to="/connect-wallet" className="btn-primary inline-flex items-center gap-2">
+                  Connect Wallet
+                </Link>
+              </div>
             )}
             {status === 'rejected' && (
               <p className="text-gray-400 text-sm">

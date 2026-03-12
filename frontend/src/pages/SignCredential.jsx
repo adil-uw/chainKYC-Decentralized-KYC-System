@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { getCredential } from '../api/credentials';
+import { getCredentialStatus } from '../api/credentials';
 import { signCredential } from '../api/credentials';
 import LoadingSpinner from '../components/LoadingSpinner';
 import Toast from '../components/Toast';
@@ -12,12 +12,13 @@ export default function SignCredential() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [toast, setToast] = useState(null);
+  const [lastSignError, setLastSignError] = useState(null);
 
   const load = async () => {
     if (!credentialId) return;
     setLoading(true);
     try {
-      const res = await getCredential(credentialId);
+      const res = await getCredentialStatus(credentialId);
       setData(res);
     } catch {
       setData(null);
@@ -32,12 +33,15 @@ export default function SignCredential() {
 
   const handleSign = async () => {
     setSubmitting(true);
+    setLastSignError(null);
     try {
       const result = await signCredential(credentialId);
       setData((prev) => ({ ...prev, ...result }));
       setToast({ message: 'Credential signed', variant: 'success' });
     } catch (err) {
-      setToast({ message: err.message || 'Signing failed', variant: 'error' });
+      const msg = err.response?.data?.message || err.message || 'Signing failed';
+      setLastSignError(msg);
+      setToast({ message: msg, variant: 'error' });
     } finally {
       setSubmitting(false);
     }
@@ -70,8 +74,9 @@ export default function SignCredential() {
       </div>
 
       <div className="card space-y-4">
-        <p className="text-sm text-gray-400">Credential ID: <code className="text-accent-cyan">{data.credentialId ?? data.id}</code></p>
+        <p className="text-sm text-gray-400">Credential ID: <code className="text-accent-cyan">{data.credentialId ?? data.id ?? credentialId}</code></p>
         {!alreadySigned ? (
+          <>
           <button
             type="button"
             className="btn-primary flex items-center gap-2"
@@ -81,6 +86,26 @@ export default function SignCredential() {
             {submitting && <LoadingSpinner className="w-4 h-4" />}
             Hash & Sign
           </button>
+          <p className="text-xs text-gray-500 mt-2">
+            If signing fails, the backend needs <code className="bg-bg-muted px-1 rounded">KYC_PROVIDER_PRIVATE_KEY</code> in <code className="bg-bg-muted px-1 rounded">backend/.env</code>. Run <code className="bg-bg-muted px-1 rounded">python scripts/generate_kyc_key.py</code> in the backend folder to generate one.
+          </p>
+          {lastSignError && (
+            <div className="mt-4 p-4 rounded-lg border border-amber-500/40 bg-amber-500/10">
+              <p className="text-amber-400 font-medium text-sm mb-2">Signing failed — fix steps:</p>
+              <ol className="text-gray-300 text-sm list-decimal list-inside space-y-1">
+                <li>Open a terminal and go to the <strong>backend</strong> folder.</li>
+                <li>Run: <code className="bg-bg-muted px-1 rounded text-accent-cyan">python scripts/generate_kyc_key.py</code></li>
+                <li>Copy the line starting with <code className="bg-bg-muted px-1 rounded">KYC_PROVIDER_PRIVATE_KEY=0x...</code></li>
+                <li>Create or edit <code className="bg-bg-muted px-1 rounded">backend/.env</code> and paste that line (save the file).</li>
+                <li><strong>Restart the backend</strong> (stop uvicorn and run <code className="bg-bg-muted px-1 rounded">uvicorn main:app --reload</code> again).</li>
+                <li>Click &quot;Hash & Sign&quot; again.</li>
+              </ol>
+              {lastSignError && lastSignError !== 'Signing failed' && (
+                <p className="text-gray-400 text-xs mt-2">Backend said: {lastSignError}</p>
+              )}
+            </div>
+          )}
+          </>
         ) : (
           <div className="space-y-3">
             <p className="text-green-400 text-sm font-medium">Signed</p>

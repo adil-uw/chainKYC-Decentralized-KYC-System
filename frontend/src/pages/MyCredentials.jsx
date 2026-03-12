@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { getCredentialsByWallet } from '../api/credentials';
+import { listCredentialsByWallet } from '../api/credentials';
 import { useAppStore } from '../store/appStore';
 import { getConnectedAddress } from '../lib/wallet';
 import StatusBadge from '../components/StatusBadge';
@@ -19,12 +19,19 @@ export default function MyCredentials() {
     if (!wallet?.trim()) return;
     setLoading(true);
     setCredentials(null);
+    setToast(null);
     try {
-      const data = await getCredentialsByWallet(wallet.trim());
-      setCredentials(Array.isArray(data) ? data : data?.credentials ?? data?.items ?? []);
+      const data = await listCredentialsByWallet(wallet.trim());
+      setCredentials(Array.isArray(data?.credentials) ? data.credentials : data?.credentials ?? []);
     } catch (err) {
-      setToast({ message: err.message || 'Failed to load credentials', variant: 'error' });
-      setCredentials([]);
+      const msg = err.response?.data?.message || err.message || '';
+      const isNotFound = err.response?.status === 404 || /no credentials found|not found for this wallet/i.test(msg);
+      if (isNotFound) {
+        setCredentials([]);
+      } else {
+        setToast({ message: msg || 'Failed to load credentials', variant: 'error' });
+        setCredentials([]);
+      }
     } finally {
       setLoading(false);
     }
@@ -59,9 +66,16 @@ export default function MyCredentials() {
       {credentials && (
         <>
           {credentials.length === 0 ? (
-            <div className="card flex flex-col items-center justify-center py-12 text-gray-400">
-              <Award className="w-12 h-12 mb-3 opacity-50" />
-              <p>No credentials found for this wallet.</p>
+            <div className="card flex flex-col items-center justify-center py-12 text-center">
+              <Award className="w-12 h-12 mb-3 text-gray-500 opacity-50" />
+              <p className="text-gray-400 font-medium">No credentials found for this wallet.</p>
+              <p className="text-gray-500 text-sm mt-2 max-w-md">
+                Credentials appear here after you: 1) Submit KYC and get approved, 2) Link this wallet on Connect Wallet, 3) A provider issues a credential for your request (Provider Dashboard → Issue Credential).
+              </p>
+              <div className="flex gap-2 mt-4">
+                <Link to="/submit-kyc" className="btn-secondary text-sm">Submit KYC</Link>
+                <Link to="/connect-wallet" className="btn-secondary text-sm">Connect Wallet</Link>
+              </div>
             </div>
           ) : (
             <div className="grid gap-4">

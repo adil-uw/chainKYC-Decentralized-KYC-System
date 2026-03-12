@@ -13,12 +13,16 @@ ETH_ADDRESS_PATTERN = re.compile(r"^0x[a-fA-F0-9]{40}$")
 
 
 class CredentialIssueResponse(BaseModel):
-    """Success response when a credential is issued."""
+    """Success response when a credential is issued (Use Case 4). Includes display fields for frontend."""
 
     credential_id: str = Field(..., alias="credentialId")
     kyc_request_id: str = Field(..., alias="kycRequestId")
     status: str = Field(..., description="active")
     message: str = Field(..., description="Credential issued successfully")
+    issuer: str | None = Field(None, description="KYCProvider")
+    subject_wallet: str | None = Field(None, alias="subjectWallet")
+    issued_at: str | None = Field(None, alias="issuedAt")
+    expiry: str | None = Field(None)
 
     model_config = {"populate_by_name": True}
 
@@ -80,12 +84,11 @@ class CredentialByWalletResponse(BaseModel):
 class CredentialVerifyRequest(BaseModel):
     """
     Request body for POST /api/credentials/verify (Use Case 7).
-    Accepts the same shape as GET /by-wallet response so that JSON can be
-    downloaded from get-credential and uploaded to verify as-is.
-    Extra fields (credentialId, message) are ignored.
+    Credential is accepted as a dict so DB exports (e.g. MongoDB $date, extra fields
+    like fullName, kycRequestId) are accepted. Backend normalizes and uses the 6 hash fields.
     """
 
-    credential: CredentialPayload = Field(..., description="Credential package from KYC provider")
+    credential: dict = Field(..., description="Credential object (from DB or by-wallet); may include $date, fullName, etc.")
     signature: str = Field(..., description="Issuer signature attached to the credential")
 
     model_config = {"populate_by_name": True, "extra": "ignore"}

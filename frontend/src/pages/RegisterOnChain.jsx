@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { getCredential } from '../api/credentials';
+import { getCredentialStatus } from '../api/credentials';
 import { registerCredentialOnChain } from '../api/credentials';
 import LoadingSpinner from '../components/LoadingSpinner';
 import Toast from '../components/Toast';
@@ -12,12 +12,13 @@ export default function RegisterOnChain() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [toast, setToast] = useState(null);
+  const [registerError, setRegisterError] = useState(null);
 
   const load = async () => {
     if (!credentialId) return;
     setLoading(true);
     try {
-      const res = await getCredential(credentialId);
+      const res = await getCredentialStatus(credentialId);
       setData(res);
     } catch {
       setData(null);
@@ -32,16 +33,16 @@ export default function RegisterOnChain() {
 
   const handleRegister = async () => {
     setSubmitting(true);
+    setRegisterError(null);
     try {
       const result = await registerCredentialOnChain(credentialId);
       setData((prev) => ({ ...prev, ...result, registeredOnChain: true }));
       setToast({ message: 'Registered on-chain', variant: 'success' });
     } catch (err) {
-      const msg = err.message || 'Registration failed';
+      const msg = err.response?.data?.message || err.message || 'Registration failed';
+      setRegisterError(msg);
       if (msg.includes('already') || err.response?.status === 409) {
         setToast({ message: 'Already registered on-chain', variant: 'error' });
-      } else if (msg.includes('blockchain') || msg.includes('RPC') || err.response?.status === 502) {
-        setToast({ message: 'Blockchain/RPC error. Check network.', variant: 'error' });
       } else {
         setToast({ message: msg, variant: 'error' });
       }
@@ -83,15 +84,31 @@ export default function RegisterOnChain() {
         {data.issuer && <p className="text-sm text-gray-400">Issuer: <code className="font-mono text-xs">{data.issuer}</code></p>}
 
         {!registered ? (
-          <button
-            type="button"
-            className="btn-primary flex items-center gap-2"
-            onClick={handleRegister}
-            disabled={submitting}
-          >
-            {submitting && <LoadingSpinner className="w-4 h-4" />}
-            Register On-Chain
-          </button>
+          <>
+            <button
+              type="button"
+              className="btn-primary flex items-center gap-2"
+              onClick={handleRegister}
+              disabled={submitting}
+            >
+              {submitting && <LoadingSpinner className="w-4 h-4" />}
+              Register On-Chain
+            </button>
+            <p className="text-xs text-gray-500 mt-2">
+              Requires a deployed dKYCRegistry contract and <code className="bg-bg-muted px-1 rounded">RPC_URL</code>, <code className="bg-bg-muted px-1 rounded">CONTRACT_ADDRESS</code>, <code className="bg-bg-muted px-1 rounded">KYC_PROVIDER_PRIVATE_KEY</code> in <code className="bg-bg-muted px-1 rounded">backend/.env</code>. Contract admin must call <code className="bg-bg-muted px-1 rounded">addIssuer(KYC_PROVIDER_ADDRESS)</code>.
+            </p>
+            {registerError && (
+              <div className="mt-4 p-4 rounded-lg border border-amber-500/40 bg-amber-500/10">
+                <p className="text-amber-400 font-medium text-sm mb-1">Why it failed</p>
+                <p className="text-gray-300 text-sm">{registerError}</p>
+                {registerError.toLowerCase().includes('missing credentialhash') || registerError.toLowerCase().includes('missing signature') ? (
+                  <p className="text-gray-500 text-xs mt-2">Complete the <strong>Hash &amp; Sign</strong> step first (Provider Dashboard → Hash &amp; Sign for this credential), then try Register On-Chain again.</p>
+                ) : (
+                  <p className="text-gray-500 text-xs mt-2">If the backend has no RPC/contract configured, it will use demo mode and still mark the credential as registered. Restart the backend and try again.</p>
+                )}
+              </div>
+            )}
+          </>
         ) : (
           <div className="space-y-3 pt-2 border-t border-border">
             <span className="badge badge-success">Registered</span>

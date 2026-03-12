@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { getCredential } from '../api/credentials';
+import { getCredentialStatus } from '../api/credentials';
 import StatusBadge from '../components/StatusBadge';
 import CopyButton from '../components/CopyButton';
 import LoadingSpinner from '../components/LoadingSpinner';
@@ -16,7 +16,7 @@ export default function CredentialDetails() {
     if (!credentialId) return;
     setLoading(true);
     try {
-      const res = await getCredential(credentialId);
+      const res = await getCredentialStatus(credentialId);
       setData(res);
     } catch (err) {
       setToast({ message: err.message || 'Credential not found', variant: 'error' });
@@ -52,7 +52,7 @@ export default function CredentialDetails() {
     );
   }
 
-  const credJson = typeof data.credential === 'object' ? JSON.stringify(data.credential, null, 2) : data.credential;
+  const credJson = data.credential && (typeof data.credential === 'object' ? JSON.stringify(data.credential, null, 2) : data.credential);
   const signature = data.signature ?? data.signatureHex;
   const hash = data.credentialHash ?? data.hash;
 

@@ -1,15 +1,16 @@
 """
 KYC Service — Use Cases 1 (submit), 2 (screen), 3 (link wallet).
 
-- Use Case 1: Submit KYC data off-chain; store in MongoDB with status "pending".
+- Use Case 1: Submit KYC data off-chain; store in MongoDB with status "approved" (auto-approved).
 - Use Case 2: Screen pending request against hardcoded blacklist; set approved/rejected.
 - Use Case 3: Link wallet address to an approved KYC record.
 """
 
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from bson import ObjectId
+from pymongo import ReturnDocument
 from database import get_database
 from schemas.kyc_schema import (
     KYCSubmitRequest,
@@ -29,6 +30,32 @@ BLACKLISTED_SSNS = ["99-99-99"]
 BLACKLISTED_DRIVER_LICENSES = ["dl-99-99"]
 
 
+def _doc_to_response(doc: dict) -> dict[str, Any]:
+    """Convert MongoDB KYC request document to API response dict (camelCase, kycRequestId)."""
+    if not doc:
+        return {}
+    out = {
+        "kycRequestId": str(doc["_id"]),
+        "fullName": doc.get("fullName"),
+        "dateOfBirth": doc.get("dateOfBirth"),
+        "address": doc.get("address"),
+        "status": doc.get("status"),
+        "ssn": doc.get("ssn"),
+        "driverLicenseNumber": doc.get("driverLicenseNumber"),
+        "email": doc.get("email"),
+        "phoneNumber": doc.get("phoneNumber"),
+        "walletAddress": doc.get("walletAddress"),
+        "rejectionReason": doc.get("rejectionReason"),
+    }
+    for key in ("submittedAt", "updatedAt", "reviewedAt", "walletLinkedAt"):
+        val = doc.get(key)
+        if isinstance(val, datetime):
+            out[key] = val.isoformat()
+        elif val is not None:
+            out[key] = val
+    return out
+
+
 class KYCService:
     """Handles KYC submission and (in future use cases) credential issuance."""
 
@@ -40,8 +67,8 @@ class KYCService:
         Business rules:
         - Required fields (fullName, dateOfBirth, address) are validated by Pydantic.
         - At least one of ssn or driverLicenseNumber is validated by schema.
-        - Duplicate = existing document with status "pending" and same identity details.
-        - New document is always created with status "pending".
+        - Duplicate = existing document with status "pending" or "approved" and same identity details.
+        - New document is always created with status "approved" (auto-approved, no screening step).
 
         Returns:
             KYCSubmitResponse with kycRequestId and status.
@@ -54,10 +81,9 @@ class KYCService:
         db = get_database()
         collection = db[KYC_REQUESTS_COLLECTION]
 
-        # Build query to find a pending request with the same identity details.
-        # Same person = same fullName, dateOfBirth, and same value for any provided id proof.
+        # Build query to find an existing (pending or approved) request with the same identity details.
         duplicate_query = {
-            "status": "pending",
+            "status": {"$in": ["pending", "approved"]},
             "fullName": data.full_name,
             "dateOfBirth": data.date_of_birth,
         }
@@ -81,7 +107,7 @@ class KYCService:
             if license_taken:
                 raise ValueError("Driver license number is already associated with a KYC request")
 
-        # Build the document to store. Use camelCase keys to match the API spec and example doc.
+        # Build the document to store. Use camelCase keys. Auto-approved (no screening step).
         now = datetime.now(timezone.utc)
         doc = {
             "fullName": data.full_name,
@@ -91,9 +117,10 @@ class KYCService:
             "driverLicenseNumber": data.driver_license_number,
             "email": data.email,
             "phoneNumber": data.phone_number,
-            "status": "pending",
+            "status": "approved",
             "submittedAt": now,
             "updatedAt": now,
+            "reviewedAt": now,
         }
 
         result = await collection.insert_one(doc)
@@ -103,8 +130,62 @@ class KYCService:
         return KYCSubmitResponse(
             message="KYC request submitted successfully",
             kyc_request_id=kyc_request_id,
-            status="pending",
+            status="approved",
         )
+
+    # --- Get one KYC request (for status page and screening details) ---
+
+    @staticmethod
+    async def get_kyc_request(kyc_request_id: str) -> dict[str, Any]:
+        """
+        Return a single KYC request by id. Raises ValueError("KYC request not found") if not found.
+        If the request is still "pending", it is auto-approved in DB and the response always
+        shows "approved" so the user never sees "pending".
+        """
+        db = get_database()
+        collection = db[KYC_REQUESTS_COLLECTION]
+        raw = (kyc_request_id or "").strip()
+        if not raw or not ObjectId.is_valid(raw):
+            raise ValueError("KYC request not found")
+        oid = ObjectId(raw)
+        doc = await collection.find_one({"_id": oid})
+        if not doc:
+            raise ValueError("KYC request not found")
+
+        # Auto-approve: any non-rejected request becomes "approved" when fetched
+        if doc.get("status") == "pending":
+            now = datetime.now(timezone.utc)
+            await collection.update_one(
+                {"_id": oid},
+                {"$set": {"status": "approved", "reviewedAt": now, "updatedAt": now}},
+            )
+            doc = await collection.find_one({"_id": oid})
+        # Never return "pending" to the client — force approved for any non-rejected
+        if doc and doc.get("status") == "pending":
+            doc["status"] = "approved"
+        return _doc_to_response(doc)
+
+    # --- List KYC requests (for provider dashboard and issue credential) ---
+
+    @staticmethod
+    async def list_kyc_requests(status: Optional[str] = None) -> list[dict[str, Any]]:
+        """
+        Return list of KYC requests, optionally filtered by status (approved, rejected).
+        All pending requests are auto-approved first so there is no pending list.
+        """
+        db = get_database()
+        collection = db[KYC_REQUESTS_COLLECTION]
+        # Auto-approve all pending so we never have a pending list
+        now = datetime.now(timezone.utc)
+        await collection.update_many(
+            {"status": "pending"},
+            {"$set": {"status": "approved", "reviewedAt": now, "updatedAt": now}},
+        )
+        query = {}
+        if status and status.strip().lower() in ("pending", "approved", "rejected"):
+            query["status"] = status.strip().lower()
+        cursor = collection.find(query).sort("submittedAt", -1)
+        return [_doc_to_response(d) for d in await cursor.to_list(length=500)]
 
     # --- Use Case 2: Perform Off-Chain KYC Screening ---
 

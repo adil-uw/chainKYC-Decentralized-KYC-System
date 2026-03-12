@@ -5,20 +5,23 @@ export default function IntroLayer({ onEnter }) {
   const [exiting, setExiting] = useState(false);
 
   const handleEnter = () => {
+    if (typeof onEnter !== 'function') return;
     setExiting(true);
     setTimeout(() => {
       onEnter();
-    }, 400);
+    }, 500);
   };
 
   return (
     <div
-      className={`fixed inset-0 z-50 flex flex-col items-center justify-center bg-bg transition-opacity duration-400 ${
+      role="presentation"
+      style={{ backgroundColor: '#0a0e17' }}
+      className={`fixed inset-0 z-50 flex flex-col items-center justify-center bg-bg transition-opacity duration-500 ${
         exiting ? 'opacity-0 pointer-events-none' : 'opacity-100'
       }`}
     >
       <div
-        className={`flex flex-col items-center justify-center text-center px-6 transition-all duration-400 ${
+        className={`flex flex-col items-center justify-center text-center px-6 transition-all duration-500 ${
           exiting ? 'opacity-0 translate-y-4' : 'opacity-100 translate-y-0'
         }`}
       >

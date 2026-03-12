@@ -39,7 +39,7 @@ const scenarios = [
   {
     category: 'Credential issuance',
     cases: [
-      { title: 'Issue credential', input: 'kycRequestId (approved, wallet linked)', expectedStatus: 201, expectedMessage: 'credentialId, issuer, issuedAt, expiry', badge: 'success' },
+      { title: 'Issue credential', input: 'kycRequestId (approved, wallet linked)', expectedStatus: 200, expectedMessage: 'credentialId, issuer, issuedAt, expiry', badge: 'success' },
       { title: 'Request not found', input: 'Invalid kycRequestId', expectedStatus: 404, expectedMessage: 'Not found', badge: 'error' },
       { title: 'Not approved', input: 'Pending/rejected request', expectedStatus: 403, expectedMessage: 'Not approved', badge: 'error' },
       { title: 'Wallet not linked', input: 'Approved but no wallet', expectedStatus: 400, expectedMessage: 'Wallet not linked', badge: 'error' },

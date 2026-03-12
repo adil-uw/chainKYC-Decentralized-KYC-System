@@ -8,6 +8,7 @@ import Toast from '../components/Toast';
 export default function IssueCredential() {
   const [requests, setRequests] = useState([]);
   const [selectedId, setSelectedId] = useState('');
+  const [manualId, setManualId] = useState('');
   const [issued, setIssued] = useState(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -21,13 +22,15 @@ export default function IssueCredential() {
   }, []);
 
   const approved = requests.filter((r) => (r.status || '').toLowerCase() === 'approved');
+  const kycIdToUse = selectedId || manualId.trim() || null;
 
   const handleIssue = async () => {
-    if (!selectedId) return;
+    const id = kycIdToUse;
+    if (!id) return;
     setSubmitting(true);
     setIssued(null);
     try {
-      const data = await issueCredential(selectedId);
+      const data = await issueCredential(id);
       setIssued(data);
       setToast({ message: 'Credential issued', variant: 'success' });
     } catch (err) {
@@ -59,14 +62,13 @@ export default function IssueCredential() {
         <p className="text-gray-400 text-sm">Select an approved KYC request to issue a credential.</p>
         {loading ? (
           <div className="flex justify-center py-6"><LoadingSpinner /></div>
-        ) : approved.length === 0 ? (
-          <p className="text-gray-500">No approved requests. Approve a request from the dashboard first.</p>
-        ) : (
+        ) : null}
+        {!loading && approved.length > 0 && (
           <>
-            <label className="block text-sm font-medium text-gray-300">KYC Request</label>
+            <label className="block text-sm font-medium text-gray-300">KYC Request (from list)</label>
             <select
               value={selectedId}
-              onChange={(e) => setSelectedId(e.target.value)}
+              onChange={(e) => { setSelectedId(e.target.value); setManualId(''); }}
               className="input-field"
             >
               <option value="">Select request</option>
@@ -76,17 +78,25 @@ export default function IssueCredential() {
                 </option>
               ))}
             </select>
-            <button
-              type="button"
-              className="btn-primary flex items-center gap-2"
-              onClick={handleIssue}
-              disabled={submitting || !selectedId}
-            >
-              {submitting && <LoadingSpinner className="w-4 h-4" />}
-              Issue Credential
-            </button>
           </>
         )}
+        <label className="block text-sm font-medium text-gray-300 mt-2">Or enter KYC Request ID</label>
+        <input
+          type="text"
+          value={manualId}
+          onChange={(e) => { setManualId(e.target.value); if (selectedId) setSelectedId(''); }}
+          placeholder="Paste approved KYC request ID"
+          className="input-field font-mono"
+        />
+        <button
+          type="button"
+          className="btn-primary flex items-center gap-2"
+          onClick={handleIssue}
+          disabled={submitting || !kycIdToUse}
+        >
+          {submitting && <LoadingSpinner className="w-4 h-4" />}
+          Issue Credential
+        </button>
       </div>
 
       {issued && (

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { getCredential } from '../api/credentials';
+import { getCredentialStatus } from '../api/credentials';
 import { revokeCredential } from '../api/credentials';
 import LoadingSpinner from '../components/LoadingSpinner';
 import Toast from '../components/Toast';
@@ -19,7 +19,7 @@ export default function RevokeCredential() {
     if (!credentialId) return;
     setLoading(true);
     try {
-      const res = await getCredential(credentialId);
+      const res = await getCredentialStatus(credentialId);
       setData(res);
     } catch {
       setData(null);

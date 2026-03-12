@@ -19,15 +19,19 @@ import RevokeCredential from './pages/RevokeCredential';
 import TestCases from './pages/TestCases';
 
 export default function App() {
-  const { introDismissed, dismissIntro, hydrateFromStorage } = useAppStore();
+  const introDismissed = useAppStore((s) => s.introDismissed);
+  const dismissIntro = useAppStore((s) => s.dismissIntro);
+  const hydrateFromStorage = useAppStore((s) => s.hydrateFromStorage);
 
   useEffect(() => {
-    hydrateFromStorage();
+    hydrateFromStorage?.();
   }, [hydrateFromStorage]);
 
+  const showIntro = introDismissed !== true;
+
   return (
-    <>
-      {!introDismissed && (
+    <div style={{ minHeight: '100vh', backgroundColor: '#0a0e17', color: '#e2e8f0' }}>
+      {showIntro && (
         <IntroLayer onEnter={dismissIntro} />
       )}
       <Layout>
@@ -48,6 +52,6 @@ export default function App() {
           <Route path="/test-cases" element={<TestCases />} />
         </Routes>
       </Layout>
-    </>
+    </div>
   );
 }

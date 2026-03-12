@@ -29,6 +29,43 @@ def _message_response(status_code: int, message: str) -> JSONResponse:
     return JSONResponse(status_code=status_code, content={"message": message})
 
 
+# --- GET list and GET one (register before /{kyc_request_id}/... so "requests" is not captured) ---
+
+
+@router.get(
+    "/requests",
+    status_code=200,
+    responses={500: {"description": "Failed to list KYC requests"}},
+)
+async def list_kyc_requests(status: str | None = None):
+    """List KYC requests, optionally filtered by status (pending, approved, rejected)."""
+    try:
+        items = await KYCService.list_kyc_requests(status=status)
+        return JSONResponse(status_code=200, content=items)
+    except Exception as e:
+        logger.exception("List KYC requests failed: %s", e)
+        return _message_response(500, "Failed to list KYC requests")
+
+
+@router.get(
+    "/requests/{kyc_request_id}",
+    status_code=200,
+    responses={404: {"description": "KYC request not found"}},
+)
+async def get_kyc_request(kyc_request_id: str):
+    """Get a single KYC request by id (for status page and screening)."""
+    try:
+        data = await KYCService.get_kyc_request(kyc_request_id)
+        return JSONResponse(status_code=200, content=data)
+    except ValueError as e:
+        if str(e) == "KYC request not found":
+            return _message_response(404, str(e))
+        return _message_response(400, str(e))
+    except Exception as e:
+        logger.exception("Get KYC request failed: %s", e)
+        return _message_response(500, "Failed to get KYC request")
+
+
 @router.post(
     "/submit",
     status_code=201,
