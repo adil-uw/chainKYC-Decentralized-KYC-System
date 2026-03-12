@@ -6,8 +6,6 @@ Uses Ethereum signed message format so verifiers can recover the signer address.
 """
 
 import os
-from typing import Optional
-
 from eth_account import Account
 from eth_account.messages import encode_defunct
 
@@ -19,32 +17,42 @@ def _hash_hex_to_bytes(hash_hex: str) -> bytes:
     return bytes.fromhex(hash_hex)
 
 
-def sign_credential_hash(credential_hash_hex: str) -> Optional[str]:
+def sign_credential_hash(credential_hash_hex: str) -> str:
     """
     Sign the credential hash (0x-prefixed hex) with the KYC provider's private key.
     Uses encode_defunct so the 32-byte hash is signed in Ethereum signed-message form.
-    Returns 0x-prefixed signature hex (r || s || v), or None if key is not configured.
+    Returns 0x-prefixed signature hex (r || s || v).
+    Raises RuntimeError with a clear message if key is missing, invalid, or hash is wrong length.
     """
-    key_hex = os.getenv("KYC_PROVIDER_PRIVATE_KEY")
-    if not key_hex or not key_hex.strip():
-        return None
-    key_hex = key_hex.strip()
+    key_hex = (os.getenv("KYC_PROVIDER_PRIVATE_KEY") or "").strip()
+    if not key_hex:
+        raise RuntimeError("KYC_PROVIDER_PRIVATE_KEY is not set. Add it to backend/.env (run: python scripts/generate_kyc_key.py)")
+
     if key_hex.startswith("0x"):
         key_hex = key_hex[2:]
+    if len(key_hex) != 64 or not all(c in "0123456789abcdefABCDEF" for c in key_hex):
+        raise RuntimeError("KYC_PROVIDER_PRIVATE_KEY must be 64 hex characters (with or without 0x prefix)")
 
     try:
         account = Account.from_key(key_hex)
-    except Exception:
-        return None
+    except Exception as e:
+        raise RuntimeError(f"KYC_PROVIDER_PRIVATE_KEY is invalid: {e!s}") from e
 
-    hash_bytes = _hash_hex_to_bytes(credential_hash_hex)
+    if not credential_hash_hex or not isinstance(credential_hash_hex, str):
+        raise RuntimeError("Credential hash is missing")
+    try:
+        hash_bytes = _hash_hex_to_bytes(credential_hash_hex)
+    except Exception as e:
+        raise RuntimeError(f"Invalid credential hash format: {e!s}") from e
     if len(hash_bytes) != 32:
-        return None
+        raise RuntimeError(f"Credential hash must be 32 bytes (got {len(hash_bytes)})")
 
-    # Standard Ethereum signed message: prefix + message, then sign (verifiers can recover address)
-    message = encode_defunct(primitive=hash_bytes)
-    signed = account.sign_message(message)
-    return "0x" + signed.signature.hex()
+    try:
+        message = encode_defunct(primitive=hash_bytes)
+        signed = account.sign_message(message)
+        return "0x" + signed.signature.hex()
+    except Exception as e:
+        raise RuntimeError(f"Signing failed: {e!s}") from e
 
 
 def verify_credential_signature(

@@ -34,6 +34,12 @@ def _get_config() -> Tuple[Optional[str], Optional[str], Optional[str]]:
     return (rpc, addr, key)
 
 
+def is_chain_configured() -> bool:
+    """True if RPC_URL and CONTRACT_ADDRESS are set (real on-chain registration possible)."""
+    rpc, addr, _ = _get_config()
+    return bool(rpc and (rpc or "").strip() and addr and (addr or "").strip())
+
+
 def _hash_hex_to_bytes32(hash_hex: str) -> bytes:
     """0x-prefixed 64-char hex (SHA-256) -> 32 bytes for bytes32."""
     if hash_hex.startswith("0x"):
@@ -81,28 +87,34 @@ def is_registered_on_chain(credential_hash_hex: str) -> bool:
 def register_credential_on_chain(
     credential_hash_hex: str,
     expiry_timestamp: int,
-) -> Optional[str]:
+) -> str:
     """
     Call registerCredential(bytes32 credentialHash, uint64 expiry).
     Signs and sends tx with KYC_PROVIDER_PRIVATE_KEY; waits for receipt.
-    Returns transaction hash (0x-prefixed hex) or None on failure.
+    Returns transaction hash (0x-prefixed hex).
+    Raises RuntimeError with a clear message if config is missing or tx fails.
     """
     rpc_url, contract_address, key_hex = _get_config()
-    if not rpc_url or not contract_address or not key_hex:
-        logger.error("Missing RPC_URL, CONTRACT_ADDRESS, or KYC_PROVIDER_PRIVATE_KEY")
-        return None
+    if not rpc_url or not contract_address:
+        raise RuntimeError(
+            "Register on-chain is disabled: set RPC_URL (or ETH_RPC_URL) and CONTRACT_ADDRESS "
+            "(or DKYC_REGISTRY_CONTRACT_ADDRESS) in backend/.env. Deploy the dKYCRegistry contract first."
+        )
+    if not key_hex or not key_hex.strip():
+        raise RuntimeError(
+            "Register on-chain requires KYC_PROVIDER_PRIVATE_KEY in backend/.env (same key used for signing)."
+        )
     key_hex = key_hex.strip()
     if key_hex.startswith("0x"):
         key_hex = key_hex[2:]
     try:
         w3 = Web3(Web3.HTTPProvider(rpc_url))
         if not w3.is_connected():
-            logger.error("RPC not connected")
-            return None
+            raise RuntimeError("RPC not connected. Check RPC_URL in backend/.env (e.g. https://sepolia.infura.io/v3/YOUR_KEY).")
         account = Account.from_key(key_hex)
         contract = _get_contract(w3)
         if not contract:
-            return None
+            raise RuntimeError("CONTRACT_ADDRESS not set or invalid in backend/.env.")
         hash_bytes32 = _hash_hex_to_bytes32(credential_hash_hex)
         expiry_uint64 = int(expiry_timestamp) & 0xFFFFFFFFFFFFFFFF
 
@@ -119,8 +131,7 @@ def register_credential_on_chain(
         signed = account.sign_transaction(txn)
         raw_tx = getattr(signed, "raw_transaction", None) or getattr(signed, "rawTransaction", None)
         if not raw_tx:
-            logger.error("Signed tx has no raw_transaction / rawTransaction")
-            return None
+            raise RuntimeError("Failed to sign transaction.")
         tx_hash = w3.eth.send_raw_transaction(raw_tx)
         receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
         tx_hash_hex = receipt["transactionHash"]
@@ -129,9 +140,11 @@ def register_credential_on_chain(
             tx_hash_str = "0x" + tx_hash_str
         logger.info("Tx hash: %s", tx_hash_str)
         return tx_hash_str
+    except RuntimeError:
+        raise
     except Exception as e:
         logger.exception("registerCredential transaction failed: %s", e)
-        return None
+        raise RuntimeError(f"Contract call failed: {e!s}") from e
 
 
 def get_credential_status(credential_hash_hex: str) -> Tuple[Optional[bool], Optional[bool], Optional[int]]:
